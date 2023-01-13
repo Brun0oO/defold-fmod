@@ -3034,6 +3034,11 @@ static int _FMODBridge_func_FMOD_System_CreateSound(lua_State *L) {
     const char* name_or_data = FMODBridge_check_ptr_char(L, 2);
     FMOD_MODE mode = FMODBridge_check_unsigned_int(L, 3);
     FMOD_CREATESOUNDEXINFO* exinfo = optional(L, 4, FMOD_CREATESOUNDEXINFO*, FMODBridge_check_ptr_FMOD_CREATESOUNDEXINFO(L, 4));
+    if( exinfo ) {
+        if( exinfo->cbsize <= 0 ) {
+            exinfo->cbsize = sizeof(FMOD_CREATESOUNDEXINFO);
+        }
+    } 
     FMOD_SOUND* sound;
     ensure(LL, FMOD_System_CreateSound, FMOD_RESULT, FMOD_SYSTEM*, const char*, FMOD_MODE, FMOD_CREATESOUNDEXINFO*, FMOD_SOUND**);
     errCheck(FMOD_System_CreateSound(system, name_or_data, mode, exinfo, &sound));
@@ -3051,6 +3056,11 @@ static int _FMODBridge_func_FMOD_System_CreateStream(lua_State *L) {
     const char* name_or_data = FMODBridge_check_ptr_char(L, 2);
     FMOD_MODE mode = FMODBridge_check_unsigned_int(L, 3);
     FMOD_CREATESOUNDEXINFO* exinfo = optional(L, 4, FMOD_CREATESOUNDEXINFO*, FMODBridge_check_ptr_FMOD_CREATESOUNDEXINFO(L, 4));
+    if( exinfo ) {
+        if( exinfo->cbsize <= 0 ) {
+            exinfo->cbsize = sizeof(FMOD_CREATESOUNDEXINFO);
+        }
+    } 
     FMOD_SOUND* sound;
     ensure(LL, FMOD_System_CreateStream, FMOD_RESULT, FMOD_SYSTEM*, const char*, FMOD_MODE, FMOD_CREATESOUNDEXINFO*, FMOD_SOUND**);
     errCheck(FMOD_System_CreateStream(system, name_or_data, mode, exinfo, &sound));

@@ -695,7 +695,14 @@ static int _FMODBridge_func_FMOD_Studio_CommandReplay_GetCommandString(lua_State
 {% if f.generated %}#ifndef FMODBridge_func_{{ f.name }}
 #define FMODBridge_func_{{ f.name }} _FMODBridge_func_{{ f.name }}
 static int _FMODBridge_func_{{ f.name }}(lua_State *L) {
-    {% for arg in f.args %}{% if arg.usage == "input" %}{{ arg.type.c_type }} {{ arg.name }} = {% if arg.optional %}optional(L, {{ arg.arg_index }}, {{ arg.type.c_type }}, {% endif %}FMODBridge_check_{{ arg.type.name }}(L, {{ arg.arg_index }}){% if arg.optional %}){% endif %};
+    {% for arg in f.args %}{% if arg.usage == "input" %}{{ arg.type.c_type }} {{ arg.name }} = {% if arg.optional %}optional(L, {{ arg.arg_index }}, {{ arg.type.c_type }}, {% endif %}FMODBridge_check_{{ arg.type.name }}(L, {{ arg.arg_index }}){% if arg.optional %}){% endif -%};
+    {% if arg.type.c_type == "FMOD_CREATESOUNDEXINFO*" -%}
+    if( exinfo ) {
+        if( exinfo->cbsize <= 0 ) {
+            exinfo->cbsize = sizeof(FMOD_CREATESOUNDEXINFO);
+        }
+    } 
+    {% endif -%}
     {% elif arg.usage == "input_deref" %}{{ arg.type.c_type }}* {{ arg.name }} = {% if arg.optional %}optional(L, {{ arg.arg_index }}, {{ arg.type.c_type }}*, {% endif %}FMODBridge_check_ptr_{{ arg.type.name }}(L, {{ arg.arg_index }}){% if arg.optional %}){% endif %};
     {% elif arg.usage == "input_ptr" %}{{ arg.type.child.c_type }} {{ arg.name }} = {% if arg.optional %}optional(L, {{ arg.arg_index }}, {{ arg.type.child.c_type }}, {% endif %}FMODBridge_check_{{ arg.type.child.name }}(L, {{ arg.arg_index }}){% if arg.optional %}){% endif %};
     {% elif arg.usage == "output" %}{{ arg.type.child.c_type }} {{ arg.name }};
