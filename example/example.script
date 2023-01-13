@@ -1,5 +1,12 @@
 local world_scale = 0.01
 
+-- record from microphone and play on standard output device
+-- some global declarations
+-- inspired by record.cpp file from the FMOD SDK
+local LATENCY_MS = 50 -- Some devices will require higher latency to avoid glitches
+local DRIFT_MS = 1
+--
+
 function init(self)
   msg.post(".", "acquire_input_focus")
 
@@ -50,12 +57,75 @@ function init(self)
 
   event:set_parameter_by_name("RPM", 650.0, false)
   event:start()
+
+  -- record from microphone and play on standard output device
+  -- part 1/2: initialization
+  -- inspired by record.cpp file from the FMOD SDK
+  self.channel = nil
+  self.lastRecordPos = 0
+  self.samplesRecorded = 0
+  self.samplesPlayed = 0
+  self.soundLength = 0
+  self.minRecordDelta = nil
+  self.desiredLatency = nil
+  self.adjustedLatency = nil
+  self.actualLatency = nil
+  self.driftThrehold = nil
+  self.playPos = 0
+  self.lastPlayPos = 0
+  self.nativeRate = nil
+  self.sound = nil
+  self.deviceIndex = -1
+  local nbRecordDevices= fmod.system:get_record_num_drivers()
+  for i=0,nbRecordDevices-1,1 do
+    _, _, _, _, _, state = fmod.system:get_record_driver_info(i)
+    if bit.band(state, fmod.DRIVER_STATE_DEFAULT) ~= 0 then
+      self.deviceIndex = i
+      break
+    end
+  end
+  if self.deviceIndex >= 0 then
+    name, guid, self.nativeRate, speakerMode, nativeChannels, state = fmod.system:get_record_driver_info(self.deviceIndex)
+    print("Found and use this record device:", name)
+
+    -- determine latency in samples
+    self.driftThrehold = (self.nativeRate * DRIFT_MS) / 1000      -- the point where we start compensating the drift
+    self.desiredLatency = (self.nativeRate * LATENCY_MS) / 1000   -- user specified latency
+    self.adjustedLatency = self.desiredLatency                    -- user specified latency adjusted for driver update granularity
+    self.actualLatency = self.desiredLatency                      -- latency measured once playback begins (smoothed for jitter)
+
+    -- create user sound to record into, then start recording
+    local sizeof_soundSample = 2 -- two bytes
+    local exinfo = fmod.CREATESOUNDEXINFO()
+    exinfo.cbsize = -1 -- will be populated by the API call
+    exinfo.numchannels = nativeChannels
+    exinfo.format = fmod.SOUND_FORMAT_PCM16
+    exinfo.defaultfrequency = self.nativeRate
+    exinfo.length = self.nativeRate * sizeof_soundSample * nativeChannels -- 1 second buffer, size here doesn't change latency
+
+    local mode = bit.bor(fmod.LOOP_NORMAL,fmod.OPENUSER) -- fmod.LOOP_NORMAL | fmod.OPENUSER
+    local name_or_data = ""
+    self.sound = fmod.system:create_sound(name_or_data, mode, exinfo)
+    print("self.sound:", sound)
+
+    local is_recording = fmod.system:is_recording( self.deviceIndex )
+    print("is_recording (before start recording):", is_recording)
+    fmod.system:record_start( self.deviceIndex, self.sound, true)
+    is_recording = fmod.system:is_recording( self.deviceIndex )
+    print("is_recording (after start recording):", is_recording)
+  else
+    print("Record device not found")
+  end
 end
 
 local function update_attributes(attr, dt, new_position)
   local delta_pos = new_position - attr.position
   attr.position = new_position
   attr.velocity = delta_pos * (1.0 / dt)
+end
+
+function ternary( cond , T , F )
+  if cond then return T else return F end
 end
 
 function update(self, dt)
@@ -68,6 +138,63 @@ function update(self, dt)
   local source_pos = go.get_world_position("source") * world_scale
   update_attributes(self.source_attr, dt, source_pos)
   self.event:set_3d_attributes(self.source_attr)
+
+  -- record from microphone and play on standard output device
+  -- part 2/2: updating
+  -- inspired by record.cpp file from the FMOD SDK
+  if self.deviceIndex >=0 then
+    -- determine how much has been recorded since we last checked
+    local recordPos = fmod.system:get_record_position(self.deviceIndex)
+    local recordDelta = ternary(recordPos >= self.lastRecordPos, recordPos - self.lastRecordPos, recordPos + self.soundLength - self.lastRecordPos)
+    self.lastRecordPos = recordPos
+    self.samplesRecorded =  self.samplesRecorded + recordDelta  
+
+    if (recordDelta and (self.minRecordDelta==nil or recordDelta < self.minRecordDelta)) then
+      self.minRecordDelta = recordDelta  -- smallest driver granularity seen so far
+      self.adjustedLatency = ternary(recordDelta <= self.desiredLatency, self.desiredLatency, recordDelta) -- adjust our latency if driver granularity is high
+    end
+
+    -- delay playback until our desired latency is reached
+    if (self.channel == nil and (self.samplesRecorded >= self.adjustedLatency)) then
+      self.channel = fmod.system:play_sound(self.sound, nil, false)
+      print("self.channel:", self.channel)
+      print("self.channel volume:",self.channel:get_volume())
+    end
+    if (self.channel ~= nil) then
+      -- stop recording if recording stops
+      local is_recording = fmod.system:is_recording( self.deviceIndex )
+      if (not is_recording) then
+        self.channel:set_paused(true)
+      end
+      -- determine how much has been played since we last checked
+      self.playPos = self.channel:get_position(fmod.TIMEUNIT_PCM)
+      local playDelta = ternary(self.playPos >= self.lastPlayPos, self.playPos - self.lastPlayPos, self.playPos+self.soundLength - self.lastPlayPos)
+      self.lastPlayPos = self.playPos
+      self.samplesPlayed = self.samplesPlayed + playDelta
+      -- compensate for any drift
+      local latency = self.samplesRecorded - self.samplesPlayed
+      self.actualLatency = math.floor((0.97*self.actualLatency) + (0.03 * latency))
+
+      local playbackRate = self.nativeRate
+      if( self.actualLatency < (self.adjustedLatency - self.driftThrehold)) then
+        -- play position is catching up to the record position, slow playback down by 2%
+        playbackRate = self.nativeRate - (self.nativeRate / 50)
+      elseif( self.actualLatency > (self.adjustedLatency + self.driftThrehold)) then
+        -- play position is falling behind the record position, speed playback up by 2%
+        playbackRate = self.nativeRate + (self.nativeRate / 50)
+      end
+      self.channel:set_frequency(playbackRate)
+
+
+      local info = string.format("Adjusted latency: %4d (%dms) - Actual Latency: %4d (%dms) - Recorded: %5d (%dms) - Played: %5d (%dms)", 
+      self.adjustedLatency,  self.adjustedLatency*1000/self.nativeRate,
+      self.actualLatency,  self.actualLatency*1000/self.nativeRate,
+      self.samplesRecorded,  self.samplesRecorded*1000/self.nativeRate, 
+      self.samplesPlayed,  self.samplesPlayed*1000/self.nativeRate)
+      
+      label.set_text("/recorder#label",info)
+    end
+  end
 end
 
 function on_input(self, action_id, action)
